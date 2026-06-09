@@ -1,0 +1,73 @@
+<?xml version="1.0"?>
+<launch>
+
+  <!-- ===== Arguments (override from roslaunch) ===== -->
+  <arg name="directory"      default="/default/path/to/sequence/radar"/>
+  <arg name="gt_directory"   default="/default/path/to/sequence_gt.txt"/>
+  <arg name="save_directory" default="/default/path/to/save/dir"/>
+  <arg name="bag_name"       default="2019-01-10-14-36-48-radar-oxford-10k"/>
+
+  <arg name="use_pw"         default="true"/>
+  <arg name="use_imu"        default="false"/>
+  <arg name="imu_directory"  default="/default/path/to/ins.csv"/>
+
+
+  <!-- NEW: allow unique result filenames per run -->
+  <arg name="res_file_name"  default="_res.txt"/>
+
+  <!-- ===== Node ===== -->
+  <node pkg="pw_ndt_radar_scan_matching"
+        type="radar_scan_matching"
+        name="radar_odometry"
+        ns="radar_odometry"
+        output="screen"
+        clear_params="true">
+
+    <!-- Private parameters (match NodeHandle("~")) -->
+    <param name="directory"      value="$(arg directory)"/>
+    <param name="gt_directory"   value="$(arg gt_directory)"/>
+    <param name="save_directory" value="$(arg save_directory)"/>
+    <param name="bag_name"       value="$(arg bag_name)"/>
+
+    <param name="use_pw"         value="$(arg use_pw)"/>
+    <param name="use_imu"        value="$(arg use_imu)"/>
+    <param name="imu_directory"  value="$(arg imu_directory)"/>
+
+    <!-- General -->
+    <param name="global_mask_flag" value="0"/>
+    <param name="global_viz"       value="0"/>
+    <param name="save_res"         value="1"/>
+
+    <!-- NOW wired to arg so it can be set from automation.py -->
+    <param name="res_file_name"    value="$(arg res_file_name)"/>
+
+    <param name="start_index"      value="0"/>
+
+    <!-- Thresholds / bias -->
+    <param name="max_itr" value="300"/>
+    <param name="global_threshold" value="70"/>  <!-- intensity cutoff -->
+    <param name="global_bias"      value="70"/>
+
+    <!-- PW-NDT tuning -->
+    <param name="grid_size1"      value="9"/>
+    <param name="grid_size2"      value="6"/>
+    <param name="grid_size3"      value="4"/>
+    <param name="eps1"            value="0.003"/>
+    <param name="eps2"            value="0.003"/>
+    <param name="eps3"            value="0.0003"/>
+    <param name="max_step_size1"  value="0.03"/>
+    <param name="max_step_size2"  value="0.02"/>
+    <param name="max_step_size3"  value="0.01"/>
+
+    <!-- ===== C4/C5 parameters ===== -->
+    <!-- Config A (baseline):  all false, tau=0                           -->
+    <!-- Config C (analysis):  log_covariance=true, log_degeneracy=true   -->
+    <!-- Config D (constrained): + use_constrained_update=true, tau>0     -->
+    <param name="log_covariance"         value="false"/>
+    <param name="log_degeneracy"         value="false"/>
+    <param name="use_constrained_update" value="false"/>
+    <param name="epsilon_reg"            value="0.000001"/>
+    <param name="tau_degeneracy"         value="0.0"/>
+
+  </node>
+</launch>

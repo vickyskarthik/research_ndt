@@ -1,0 +1,29 @@
+# Build outputs
+catkin_ws/build/
+catkin_ws/devel/
+catkin_ws/install/
+catkin_ws/logs/
+*.pyc
+__pycache__/
+
+# Large result files (tracked by eval scripts, not git)
+catkin_ws/src/results/result/data/*.txt
+catkin_ws/src/results/result/data/*.csv
+
+# Dataset (too large)
+dataset/
+
+# ROS logs
+~/.ros/
+nohup.out
+
+# Temp logs
+/tmp/
+
+# Python cache
+*.egg-info/
+.eggs/
+
+# Editor
+.vscode/
+*.swp
