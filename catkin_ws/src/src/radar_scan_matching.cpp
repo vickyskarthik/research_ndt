@@ -50,6 +50,8 @@ float curr_vel = 0; float curr_ang_vel = 0; double curr_t = 0;
 pcl::PointCloud<pcl::PointXYZI>::Ptr old_in_pc (new pcl::PointCloud<pcl::PointXYZI>);
 Eigen::Matrix4f curr_tf;
 
+// ── C2 global ──────────────────────────────────────────────────
+bool use_distortion_correction_ = false; // C2: per-azimuth motion distortion compensation
 // ── C4/C5 globals ──────────────────────────────────────────────────
 bool   log_covariance_       = false;   // Config B/C/D: write _cov.csv
 bool   log_degeneracy_       = false;   // Config C/D:   write _deg.csv
@@ -229,7 +231,11 @@ void Vizsualization(bool viz,
 void deleteNDMap();
 void pubNDMap(Eigen::Matrix< pcl::ndt2d::NormalDist<pcl::PointXYZI> , Eigen::Dynamic, Eigen::Dynamic> normal_distributions_map,
               double scale);
-pcl::PointCloud<pcl::PointXYZI>::Ptr RadarPolarToCartesian(const cv::Mat& raw_polar_image);
+pcl::PointCloud<pcl::PointXYZI>::Ptr RadarPolarToCartesian(
+    const cv::Mat& raw_polar_image,
+    float vel_mps = 0.0f,
+    float ang_vel_rads = 0.0f,
+    double sweep_dt = 0.0);
 ///////////////////////////////////////////////////////////////////////////
 
 // --- helpers ---
@@ -340,7 +346,15 @@ void OpenBag(std::string bag_name) {
       ++Index; continue;
     }
 
-    pcl::PointCloud<pcl::PointXYZI>::Ptr cart_pc = RadarPolarToCartesian(image_raw);
+    // C2: pass previous-frame velocity for per-azimuth undistortion
+    // Using old_vel/old_ang_vel (from frame k-1) to undistort frame k.
+    // safe_dt guards against zero/invalid dt on the first frame.
+    const double sweep_dt = safe_dt(curr_t - old_t);
+    pcl::PointCloud<pcl::PointXYZI>::Ptr cart_pc = RadarPolarToCartesian(
+        image_raw,
+        use_distortion_correction_ ? old_vel : 0.0f,
+        use_distortion_correction_ ? (old_ang_vel * static_cast<float>(M_PI) / 180.0f) : 0.0f,
+        use_distortion_correction_ ? sweep_dt : 0.0);
     if (!cart_pc || cart_pc->empty()) {
       std::cerr << "[WARNING] Polar2Cart produced empty cloud for: " << f.path << std::endl;
       ++Index; continue;
@@ -672,6 +686,10 @@ int main(int argc, char** argv)
   if (!nh.getParam("max_step_size2", max_step_size2)) ROS_WARN("[%s] Failed to get param 'max_step_size2', use default setting: %f", ros::this_node::getName().c_str(), max_step_size2);
   if (!nh.getParam("max_step_size3", max_step_size3)) ROS_WARN("[%s] Failed to get param 'max_step_size3', use default setting: %f", ros::this_node::getName().c_str(), max_step_size3);
 
+  // C2 param
+  nh.param<bool>("use_distortion_correction", use_distortion_correction_, false);
+  ROS_INFO("[C2] use_distortion_correction=%d", use_distortion_correction_);
+
   // C4/C5 params
   nh.param<bool>("log_covariance",       log_covariance_,        false);
   nh.param<bool>("log_degeneracy",       log_degeneracy_,        false);
@@ -916,7 +934,11 @@ void PrintAcc(Eigen::Matrix4f& T){
 5. convert from polar image to cartesian radar image
 6. convert cartesian as point cloud 
 */
-pcl::PointCloud<pcl::PointXYZI>::Ptr RadarPolarToCartesian(const cv::Mat& raw_polar_image) {
+pcl::PointCloud<pcl::PointXYZI>::Ptr RadarPolarToCartesian(
+    const cv::Mat& raw_polar_image,
+    float vel_mps,
+    float ang_vel_rads,
+    double sweep_dt) {
     const float radar_resolution = 0.0432f;
     const int encoder_size = 5600;
     const float cart_resolution = 0.125f;
@@ -977,6 +999,57 @@ pcl::PointCloud<pcl::PointXYZI>::Ptr RadarPolarToCartesian(const cv::Mat& raw_po
     cv::Mat u = (range - radar_resolution / 2.0f) / radar_resolution;
     cv::Mat v = (angle - azimuths[0]) / azimuth_step;
     if (interpolate_crossover) v += 1.0f;
+
+    // ── C2: Per-azimuth motion distortion compensation ──────────────────────────
+    // Each output pixel maps to an azimuth index (v). Points at higher v were
+    // captured later in the sweep when the vehicle had moved further.
+    // We correct by transforming the world coordinate of each pixel forward
+    // by the vehicle’s displacement at that azimuth’s capture time, then
+    // re-derive the range to sample the correct polar bin.
+    //
+    // alpha = fractional sweep time: 0 at azimuth 0, 1 at final azimuth
+    // Correction transform (small angle, body frame: x=right, y=forward in Oxford NDT):
+    //   x_sensor = x_world + dx*sin(a_world) - dy*cos(a_world)  (cylindrical shift)
+    // Simplified to range-only shift (dominant term, valid for straight driving):
+    //   range_corrected = range + dx_alpha  where dx_alpha = vel * alpha * dt
+    // The range shift moves the sample bin along the azimuth ray direction.
+    // ───────────────────────────────────────────────────────────────────────────
+    if (std::abs(vel_mps) > 0.01f && sweep_dt > 1e-6) {
+        // ── C2: Range-based per-azimuth undistortion ─────────────────────────
+        // Physics: vehicle moves forward by d = vel*alpha*dt during the sweep.
+        // A world point at true range r0 appears at r_i ≈ r0 - d*cos(phys_az).
+        // Recovery: r0 = r_i + d * cos(phys_az)
+        //
+        // Grid convention: X=right, Y=backward, grid angle 3π/2 = forward.
+        // cos(phys_az) = cos(angle_grid - 3π/2) = -sin(angle_grid)
+        // → range_corr = range - d * alpha * sin(angle_grid)
+        //
+        // Verification:
+        //  Forward  (angle=3π/2): sin=-1 → range_corr = range + d  ✓
+        //  Backward (angle=π/2):  sin=+1 → range_corr = range - d  ✓
+        //  Sideways (angle=0,π):  sin=0  → no correction            ✓
+        // ─────────────────────────────────────────────────────────────────────
+        const float n_az = static_cast<float>(azimuth_rows);
+        cv::Mat v_raw = v.clone();
+        if (interpolate_crossover) v_raw -= 1.0f;
+        cv::Mat alpha = v_raw / n_az;
+        alpha.setTo(0.0f, alpha < 0.0f);
+        alpha.setTo(1.0f, alpha > 1.0f);
+
+        const float total_d = vel_mps * static_cast<float>(sweep_dt);
+
+        // sin(angle) per pixel via polarToCart(mag=1): x=cos(angle), y=sin(angle)
+        cv::Mat sin_angle, dummy_cos;
+        cv::polarToCart(cv::Mat::ones(angle.size(), CV_32F), angle, dummy_cos, sin_angle);
+
+        // r0 = r_i - d * alpha * sin(angle_grid)
+        cv::Mat range_corr = range - total_d * alpha.mul(sin_angle);
+        u = (range_corr - radar_resolution / 2.0f) / radar_resolution;
+
+        std::cout << "[C2] range undistortion: vel=" << vel_mps << " m/s"
+                  << "  max_shift=" << total_d << " m" << std::endl;
+    }
+    // ───────────────────────────────────────────────────────────────────────────
 
     // Clamp remap indices to valid ranges
     cv::Mat u_max = cv::Mat::ones(u.size(), u.type()) * (fft_columns - 1);

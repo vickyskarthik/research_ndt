@@ -59,6 +59,10 @@
     <param name="max_step_size2"  value="0.02"/>
     <param name="max_step_size3"  value="0.01"/>
 
+    <!-- ===== C2: Motion distortion compensation ===== -->
+    <!-- false = Config A/C/D (baseline)  true = Config A_C2/C_C2 (with undistortion) -->
+    <param name="use_distortion_correction" value="false"/>
+
     <!-- ===== C4/C5 parameters ===== -->
     <!-- Config A (baseline):  all false, tau=0                           -->
     <!-- Config C (analysis):  log_covariance=true, log_degeneracy=true   -->
